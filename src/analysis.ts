@@ -1,15 +1,38 @@
 import { execSync } from "child_process";
 import * as path from "path";
 import * as fs from "fs";
+import {
+  getRepoRoot,
+  getDiffStats,
+  getExportDelta,
+  type FileDiffStats,
+  type ExportDelta,
+} from "./diff-summary";
 
 export interface AnalyzeOptions {
   stagedOnly?: boolean;
+  repoRoot?: string;
 }
 
-interface ChangeGroup {
+export interface ClusterDiffSummary {
+  added: number;
+  removed: number;
+  newExports: string[];
+  modifiedExports: string[];
+}
+
+export interface ChangeGroup {
   id: number;
   label: string;
   files: string[];
+  suggestedBranch: string;
+  confidence: number;
+  diffSummary: ClusterDiffSummary;
+}
+
+export interface AnalysisResult {
+  groups: ChangeGroup[];
+  totalFiles: number;
 }
 
 function unique(items: string[]): string[] {
@@ -71,7 +94,7 @@ function getChangedFiles(options: AnalyzeOptions): string[] {
       }
       return true;
     });
-  } catch (error) {
+  } catch {
     throw new Error(
       "Failed to read git changes. Are you running inside a git repository?",
     );
@@ -116,10 +139,10 @@ function parseImportTokens(filePath: string): Set<string> {
   }
 }
 
-function buildFileInfo(files: string[]): FileInfo[] {
+function buildFileInfo(files: string[], repoRoot: string): FileInfo[] {
   return files.map((relativePath) => {
     const dir = path.dirname(relativePath);
-    const absolutePath = path.resolve(relativePath);
+    const absolutePath = path.join(repoRoot, relativePath);
     return {
       path: relativePath,
       dir,
@@ -147,18 +170,79 @@ function longestCommonDirPrefix(dirs: string[]): string {
   }
 
   if (prefix.length === 0) {
-    return "(mixed)";
+    const firstSegments = new Set(
+      segmentsList.map((segments) => segments[0]).filter(Boolean),
+    );
+    const list = Array.from(firstSegments).sort().join(", ");
+    return list ? `(mixed: ${list})` : "(mixed)";
   }
 
   return prefix.join("/");
 }
 
-function buildGroups(files: string[]): ChangeGroup[] {
+function suggestBranchName(label: string): string {
+  if (label === "(repo root)") {
+    return "chore/root-changes";
+  }
+
+  if (label === "(mixed)" || label.startsWith("(mixed:")) {
+    return "feature/mixed-changes";
+  }
+
+  const sanitized = label
+    .replace(/^[./]+/, "")
+    .replace(/[\\/]+/g, "-")
+    .replace(/[^a-zA-Z0-9-_]/g, "-")
+    .replace(/-+/g, "-")
+    .toLowerCase();
+
+  if (!sanitized) {
+    return "feature/changes";
+  }
+
+  return `feature/${sanitized}`;
+}
+
+function computeConfidence(
+  info: FileInfo[],
+  componentIndices: number[],
+  adjacency: number[][],
+): number {
+  const n = componentIndices.length;
+  if (n === 0) return 0;
+  if (n === 1) return 0.6;
+
+  let sameDirPairs = 0;
+  let importPairs = 0;
+  const maxPairs = (n * (n - 1)) / 2;
+
+  for (let i = 0; i < componentIndices.length; i++) {
+    for (let j = i + 1; j < componentIndices.length; j++) {
+      const a = info[componentIndices[i]!]!;
+      const b = info[componentIndices[j]!]!;
+      if (a.dir === b.dir) sameDirPairs++;
+      const idxI = componentIndices[i]!;
+      const idxJ = componentIndices[j]!;
+      if (adjacency[idxI]!.includes(idxJ)) importPairs++;
+    }
+  }
+
+  const sameDirScore = maxPairs > 0 ? sameDirPairs / maxPairs : 0;
+  const linkScore = maxPairs > 0 ? importPairs / maxPairs : 0;
+  const coherence = 0.5 * sameDirScore + 0.5 * Math.min(1, linkScore * 2);
+  return Math.round((0.5 + 0.5 * coherence) * 100) / 100;
+}
+
+function buildGroups(
+  files: string[],
+  options: AnalyzeOptions,
+): ChangeGroup[] {
   if (files.length === 0) {
     return [];
   }
 
-  const info = buildFileInfo(files);
+  const repoRoot = options.repoRoot ?? getRepoRoot();
+  const info = buildFileInfo(files, repoRoot);
   const n = info.length;
   const adjacency: number[][] = Array.from({ length: n }, () => []);
 
@@ -190,6 +274,7 @@ function buildGroups(files: string[]): ChangeGroup[] {
   const visited = new Array<boolean>(n).fill(false);
   const groups: ChangeGroup[] = [];
   let groupId = 1;
+  const stagedOnly = options.stagedOnly ?? false;
 
   for (let i = 0; i < n; i++) {
     if (visited[i]) continue;
@@ -213,67 +298,86 @@ function buildGroups(files: string[]): ChangeGroup[] {
       .sort();
     const dirs = componentIndices.map((index) => info[index]!.dir);
     const label = longestCommonDirPrefix(dirs);
+    const suggestedBranch = suggestBranchName(label);
+    const confidence = computeConfidence(info, componentIndices, adjacency);
+
+    let added = 0;
+    let removed = 0;
+    const newExportsSet = new Set<string>();
+    const modifiedExportsSet = new Set<string>();
+
+    for (const file of componentFiles) {
+      const stats = getDiffStats(repoRoot, file, stagedOnly);
+      added += stats.added;
+      removed += stats.removed;
+      const delta = getExportDelta(repoRoot, file, stagedOnly);
+      delta.newExports.forEach((e) => newExportsSet.add(e));
+      delta.modifiedExports.forEach((e) => modifiedExportsSet.add(e));
+    }
 
     groups.push({
       id: groupId++,
       label,
       files: componentFiles,
+      suggestedBranch,
+      confidence,
+      diffSummary: {
+        added,
+        removed,
+        newExports: Array.from(newExportsSet).sort(),
+        modifiedExports: Array.from(modifiedExportsSet).sort(),
+      },
     });
   }
 
   return groups;
 }
 
-function suggestBranchName(label: string): string {
-  if (label === "(repo root)") {
-    return "chore/root-changes";
-  }
-
-  if (label === "(mixed)") {
-    return "feature/mixed-changes";
-  }
-
-  const sanitized = label
-    .replace(/^[./]+/, "")
-    .replace(/[\\/]+/g, "-")
-    .replace(/[^a-zA-Z0-9-_]/g, "-")
-    .replace(/-+/g, "-")
-    .toLowerCase();
-
-  if (!sanitized) {
-    return "feature/changes";
-  }
-
-  return `feature/${sanitized}`;
-}
-
-export function runAnalysis(options: AnalyzeOptions): void {
+export function runAnalysisSync(options: AnalyzeOptions): AnalysisResult | null {
   const files = getChangedFiles(options);
 
   if (files.length === 0) {
-    // eslint-disable-next-line no-console
-    console.log("No changes detected in the working tree.");
-    return;
+    return null;
   }
 
-  const groups = buildGroups(files);
+  const groups = buildGroups(files, options);
+  return { groups, totalFiles: files.length };
+}
 
-  // eslint-disable-next-line no-console
+function formatDiffSummary(g: ChangeGroup): string {
+  const d = g.diffSummary;
+  const parts: string[] = [];
+  parts.push(`+${d.added} -${d.removed}`);
+  if (d.newExports.length > 0) {
+    parts.push(`New exports: ${d.newExports.join(", ")}`);
+  }
+  if (d.modifiedExports.length > 0) {
+    parts.push(`Modified exports: ${d.modifiedExports.join(", ")}`);
+  }
+  return parts.join(" | ");
+}
+
+export function printAnalysisResult(result: AnalysisResult): void {
+  const { groups } = result;
   console.log(`Detected ${groups.length} logical group(s):\n`);
-
   for (const group of groups) {
-    const branchName = suggestBranchName(group.label);
-
-    // eslint-disable-next-line no-console
     console.log(
-      `[${group.id}] ${group.label} (${group.files.length} file(s))`,
+      `[${group.id}] ${group.label} (${group.files.length} file(s)) — Confidence: ${(group.confidence * 100).toFixed(0)}%`,
     );
     for (const file of group.files) {
-      // eslint-disable-next-line no-console
       console.log(`  - ${file}`);
     }
-    // eslint-disable-next-line no-console
-    console.log(`\n  Suggested branch: ${branchName}\n`);
+    console.log(`  Suggested branch: ${group.suggestedBranch}`);
+    console.log(`  Diff: ${formatDiffSummary(group)}`);
+    console.log("");
   }
 }
 
+export function runAnalysis(options: AnalyzeOptions): void {
+  const result = runAnalysisSync(options);
+  if (!result) {
+    console.log("No changes detected in the working tree.");
+    return;
+  }
+  printAnalysisResult(result);
+}

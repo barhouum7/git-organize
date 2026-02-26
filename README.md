@@ -31,9 +31,10 @@ git-organize analyze
 
 This will:
 
-- **Detect** changed files in your working tree
-- **Group** them by directory (as a simple first-pass heuristic)
-- **Suggest** a branch name for each group
+- **Detect** changed files in your working tree (using a combination of `git diff` and untracked files)
+- **Ignore obvious noise** like `node_modules`, `dist`, `.next`, etc.
+- **Group** them into logical clusters based on directory and simple import relationships between files
+- **Suggest** a branch name for each cluster
 
 Only want to consider staged changes?
 
@@ -43,9 +44,9 @@ git-organize analyze --staged-only
 
 ### v0.1 Scope
 
-- **Heuristic grouping** by directory only (no AST/semantic analysis yet)
+- **Heuristic grouping** using directory and basic import co-occurrence (no deep AST/semantic analysis yet)
 - **Safe, read-only**: the tool does not create branches or modify git state
 - **Human-in-the-loop**: you take the suggested groupings and branch names and apply them however you like
 
-Future versions can grow into deeper, context-aware grouping using imports, dependency graphs, and AI assistance.
+Future versions can grow into deeper, context-aware grouping using richer dependency graphs and AI assistance.
 

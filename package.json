@@ -13,9 +13,16 @@
     "git",
     "cli",
     "workflow",
-    "developer-tools"
+    "developer-tools",
+    "productivity",
+    "code-organization",
+    "branch-naming",
+    "change-analysis",
+    "commit-suggestions",
+    "code-review",
+    "version-control"
   ],
-  "author": "",
+  "author": "Github.com/barhouum7",
   "license": "MIT",
   "dependencies": {
     "commander": "^12.1.0"

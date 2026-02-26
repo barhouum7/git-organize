@@ -1,0 +1,27 @@
+{
+  "name": "git-organize",
+  "version": "0.1.0",
+  "description": "CLI to analyze git working tree changes and suggest logical groups and branch names.",
+  "bin": {
+    "git-organize": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "analyze": "node dist/cli.js analyze"
+  },
+  "keywords": [
+    "git",
+    "cli",
+    "workflow",
+    "developer-tools"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.1",
+    "typescript": "^5.7.0"
+  }
+}

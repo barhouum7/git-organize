@@ -1,6 +1,6 @@
 {
   "name": "git-organize",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "CLI to analyze git working tree changes and suggest logical groups and branch names.",
   "bin": {
     "git-organize": "dist/cli.js"

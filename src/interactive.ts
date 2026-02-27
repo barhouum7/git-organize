@@ -1,5 +1,6 @@
 import * as readline from "readline";
 import { execSync } from "child_process";
+import pc from "picocolors";
 import type { AnalysisResult, ChangeGroup } from "./analysis";
 import { getRepoRoot } from "./diff-summary";
 
@@ -16,28 +17,56 @@ function question(rl: readline.Interface, prompt: string): Promise<string> {
 function formatDiffSummary(g: ChangeGroup): string {
   const d = g.diffSummary;
   const parts: string[] = [];
-  parts.push(`+${d.added} -${d.removed}`);
+  parts.push(`${pc.green(`+${d.added}`)} ${pc.red(`-${d.removed}`)}`);
   if (d.newExports.length > 0) {
-    parts.push(`New exports: ${d.newExports.join(", ")}`);
+    parts.push(`${pc.magentaBright(`New exports:`)} ${d.newExports.join(", ")}`);
   }
   if (d.modifiedExports.length > 0) {
-    parts.push(`Modified exports: ${d.modifiedExports.join(", ")}`);
+    parts.push(`${pc.magentaBright(`Modified exports:`)} ${d.modifiedExports.join(", ")}`);
   }
   return parts.join(" | ");
 }
 
 function printGroups(result: AnalysisResult): void {
   const { groups } = result;
-  console.log(`\nDetected ${groups.length} logical group(s):\n`);
+  console.log("");
+  console.log(pc.bold(pc.cyan(`Detected ${groups.length} logical group(s):`)));
+  console.log("");
   for (const group of groups) {
+    // displayFile is already computed in buildGroups — no extra git calls needed here.
+    const rawFile = group.timeStats?.lastModifiedFile ?? null;
+    // Check if the file path is too long to display, and if so, shorten it like (very/long/path/to/file.js -> .../to/file.js) to avoid overwhelming the user with too much text.
+    const displayFile = rawFile && rawFile.length > 40
+      ? `.../${rawFile.slice(-37)}`
+      : rawFile ?? "N/A";
+    // Confidence coloring: green >= 80%, yellow >= 60%, red otherwise.
+    const confidenceText = `${(group.confidence * 100).toFixed(0)}%`;
+    const confidenceColored =
+      group.confidence >= 0.8
+        ? pc.green(confidenceText)
+        : group.confidence >= 0.6
+          ? pc.yellow(confidenceText)
+          : pc.red(confidenceText);
+
     console.log(
-      `  [${group.id}] ${group.label} (${group.files.length} file(s)) — Confidence: ${(group.confidence * 100).toFixed(0)}%`,
+      `  ${pc.bold(
+        pc.white(`[${group.id}]`),
+      )} ${pc.bold(pc.cyan(group.label))} (${group.files.length} file(s)) — ${pc.blueBright(`Confidence:`)} ${confidenceColored}`,
     );
     for (const file of group.files) {
-      console.log(`      - ${file}`);
+      console.log(`      ${pc.dim("-")} ${file}`);
     }
-    console.log(`      Branch: ${group.suggestedBranch}`);
-    console.log(`      Diff: ${formatDiffSummary(group)}`);
+    console.log(
+      `      ${pc.magentaBright("Branch:")} ${pc.bold(pc.green(group.suggestedBranch))}`,
+    );
+    console.log(`      ${pc.magentaBright("Diff:")} ${formatDiffSummary(group)}`);
+    if (group.timeStats) {
+      console.log(
+        `      ${pc.magentaBright("Time:")} span ${pc.cyan(group.timeStats.spanLabel)} | last ${pc.cyan(group.timeStats.lastModifiedLabel)}
+        File: ${pc.yellow(displayFile)} (${new Date(group.timeStats.latest * 1000).toLocaleString()})
+        `,
+      );
+    }
     console.log("");
   }
 }
@@ -50,13 +79,47 @@ function getCurrentBranch(repoRoot: string): string {
   return name || "HEAD";
 }
 
+function getDefaultBaseBranch(repoRoot: string): string {
+  // try {
+  //   const remote = execSync("git remote", { cwd: repoRoot, encoding: "utf8" }).trim();
+  //   if (remote) {
+  //     const defaultBranch = execSync(`git remote show ${remote} | grep 'HEAD branch'`, {
+  //       cwd: repoRoot,
+  //       encoding: "utf8",
+  //     })
+  //       .split(":")
+  //       .pop()
+  //       ?.trim();
+  //     if (defaultBranch) return defaultBranch;
+  //   }
+  // } catch {
+  //   // Ignore errors and fallback to 'main'
+  // }
+  
+  // For now we'll just default to master/main without trying to detect the remote default branch, to avoid issues in ssh key passphrase prompts or other git config issues. We can add this back later with better error handling if needed.
+  const commonDefaults = ["main", "master"];
+  for (const branch of commonDefaults) {
+    try {
+      execSync(`git rev-parse --verify ${branch}`, { cwd: repoRoot, stdio: "ignore" });
+      return branch;
+    } catch {
+      // Branch doesn't exist, try next
+    }
+  }
+  // If neither main nor master exists, just return main and let git handle the error if it doesn't exist.
+  return "main";
+}
+
 function createBranchAndStage(
   repoRoot: string,
   baseBranch: string,
+  defaultBase: string,
   group: ChangeGroup,
 ): void {
   const branch = group.suggestedBranch;
-  execSync(`git checkout "${baseBranch}"`, { cwd: repoRoot, stdio: "inherit" });
+  // execSync(`git checkout "${baseBranch}"`, { cwd: repoRoot, stdio: "inherit" });
+  // Always base on default branch to avoid issues if user is on a detached HEAD or other non-branch state.
+  execSync(`git checkout "${defaultBase}"`, { cwd: repoRoot, stdio: "inherit" });
   execSync(`git checkout -b "${branch}"`, { cwd: repoRoot, stdio: "inherit" });
   for (const file of group.files) {
     execSync(`git add "${file}"`, { cwd: repoRoot, stdio: "inherit" });
@@ -106,6 +169,7 @@ export async function runInteractive(result: AnalysisResult): Promise<void> {
   }
 
   const baseBranch = getCurrentBranch(repoRoot);
+  const defaultBase = getDefaultBaseBranch(repoRoot);
 
   for (let i = 0; i < selected.length; i++) {
     const group = selected[i]!;
@@ -125,7 +189,7 @@ export async function runInteractive(result: AnalysisResult): Promise<void> {
       });
       if (again !== "y" && again !== "yes") continue;
     }
-    createBranchAndStage(repoRoot, baseBranch, group);
+    createBranchAndStage(repoRoot, baseBranch, defaultBase, group);
   }
 
   if (selected.length === 1) {

@@ -34,8 +34,9 @@ This will:
 - **Detect** changed files (using `git diff` and untracked files)
 - **Ignore** noise like `node_modules`, `dist`, `.next`, etc.
 - **Group** changes into clusters by directory and import relationships
-- **Show** per cluster: confidence score, suggested branch, and a **diff summary** (added/removed lines, new and modified exports)
+- **Show** per cluster: confidence score, suggested branch, **diff summary** (added/removed lines, new and modified exports), and **time stats** (span and last modified)
 - **Suggest** a branch name for each cluster
+- **Run efficiently** with batched git calls (one `git diff`, one `git log`, etc.) instead of per-file calls
 
 **Staged changes only:**
 
